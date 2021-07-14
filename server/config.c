@@ -486,6 +486,12 @@ AP_DECLARE(int) ap_method_is_limited(cmd_parms *cmd, const char *method)
     return 0; /* not found */
 }
 
+/*
+调用给定module的register_hooks
+2个地方调用:
+加载 预链接的 modules
+mod_so 加载 LoadModule 指定的 modules  (call by ap_add_module)
+*/
 AP_DECLARE(void) ap_register_hooks(module *m, apr_pool_t *p)
 {
     if (m->register_hooks) {
@@ -523,6 +529,12 @@ static void rebuild_conf_hash(apr_pool_t *p, int add_prelinked)
     }
 }
 
+/*
+添加给定module的指令
+2个地方调用:
+加载 预链接的 modules
+mod_so 加载 LoadModule 指定的 modules  (call by ap_add_module)
+*/
 static void ap_add_module_commands(module *m, apr_pool_t *p)
 {
     apr_pool_t *tpool;

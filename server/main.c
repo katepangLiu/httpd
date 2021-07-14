@@ -298,6 +298,12 @@ static void reset_process_pconf(process_rec *process)
     apr_pool_pre_cleanup_register(process->pconf, NULL, deregister_all_hooks);
 }
 
+/*
+1. apr库始化，apr_app_initialize()
+2. apr线程池初始化，apr_pool_t *cntx;
+3. 日志初始化
+4. process_rec *process 初始化
+*/
 static process_rec *init_process(int *argc, const char * const * *argv)
 {
     process_rec *process;
@@ -471,6 +477,10 @@ int main(int argc, const char * const argv[])
     const char *def_server_root = HTTPD_ROOT;
     const char *temp_error_log = NULL;
     const char *error;
+    /*process 存储进程维度的信息，主要包括
+    2个内存池 pool cpool
+    一个命令行参数列表
+    */
     process_rec *process;
     apr_pool_t *pconf;
     apr_pool_t *plog; /* Pool of log streams, reset _after_ each read of conf */
@@ -485,6 +495,7 @@ int main(int argc, const char * const argv[])
 
     AP_MONCONTROL(0); /* turn off profiling of startup */
 
+    
     process = init_process(&argc, &argv);
     ap_pglobal = process->pool;
     pconf = process->pconf;
@@ -510,6 +521,7 @@ int main(int argc, const char * const argv[])
     ap_server_config_defines   = apr_array_make(pcommands, 1,
                                                 sizeof(const char *));
 
+    //加载prelinked_modules
     error = ap_setup_prelinked_modules(process);
     if (error) {
         ap_log_error(APLOG_MARK, APLOG_STARTUP|APLOG_EMERG, 0, NULL, APLOGNO(00012)
@@ -517,6 +529,10 @@ int main(int argc, const char * const argv[])
         destroy_and_exit_process(process, 1);
     }
 
+    /*给mpm提供修改命令行参数的机会，
+    有些mpm需要转换成自己内部支持的参数
+    触发 ap_mpm_rewrite_args
+    */
     ap_run_rewrite_args(process);
 
     /* Maintain AP_SERVER_BASEARGS list in http_main.h to allow the MPM
@@ -524,6 +540,7 @@ int main(int argc, const char * const argv[])
      */
     apr_getopt_init(&opt, pcommands, process->argc, process->argv);
 
+    //处理命令行参数
     while ((rv = apr_getopt(opt, AP_SERVER_BASEARGS, &c, &opt_arg))
             == APR_SUCCESS) {
         const char **new;
@@ -651,6 +668,12 @@ int main(int argc, const char * const argv[])
      * This allows things, log files configuration
      * for example, to settle down.
      */
+    /*在主循环之前，预读一次配置文件，
+    这样做是为了先保证一些配置项可以确定下来，
+    比如日志文件，因为主循环前就需要打印日志了
+    配置读取之后存储为N叉树 ap_conftree
+    */
+
 
     ap_server_root = def_server_root;
     if (temp_error_log) {
@@ -677,15 +700,25 @@ int main(int argc, const char * const argv[])
     /* sort hooks here to make sure pre_config hooks are sorted properly */
     apr_hook_sort_all();
 
+    
+    /*有些mod需要对配置内容进行修改，
+    配置读取之后，还没有被处理之前，
+    通过ap_run_pre_config触发
+    所有注册 ap_hook_pre_config 的mod都能获得修改config的机会
+    */
     if (ap_run_pre_config(pconf, plog, ptemp) != OK) {
         ap_log_error(APLOG_MARK, APLOG_STARTUP |APLOG_ERR, 0,
                      NULL, APLOGNO(00013) "Pre-configuration failed");
         destroy_and_exit_process(process, 1);
     }
 
+    //处理 config_tree
+    //其中包括 mod_so 的 LoadModule 指令：加载指定的模块
     rv = ap_process_config_tree(ap_server_conf, ap_conftree,
                                 process->pconf, ptemp);
     if (rv == OK) {
+
+        //构建虚拟主机
         ap_fixup_virtual_hosts(pconf, ap_server_conf);
         ap_fini_vhost_config(pconf, ap_server_conf);
         /*
@@ -791,6 +824,7 @@ int main(int argc, const char * const argv[])
          */
         apr_hook_sort_all();
 
+        //触发各个模块检查配置项
         if (ap_run_check_config(pconf, plog, ptemp, ap_server_conf) != OK) {
             ap_log_error(APLOG_MARK, APLOG_EMERG, 0, NULL,
                          APLOGNO(00018) "Configuration check failed, exiting");
@@ -816,6 +850,12 @@ int main(int argc, const char * const argv[])
         ap_run_optional_fn_retrieve();
 
         ap_main_state = AP_SQ_MS_RUN_MPM;
+        //触发 mpm 的 ap_hook_mpm
+        //mpm 接管控制权
+        //创建并发单元 (具体由加载的mpm模块决定，可以是prefork, worker, event 等)
+        //prefork：每个子进程包含一个线程，子进程一次只能处理一个请求
+        //worker： 每个子进程包含多个线程
+        //event:   
         rc = ap_run_mpm(pconf, plog, ap_server_conf);
 
         apr_pool_lock(pconf, 0);
